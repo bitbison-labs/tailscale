@@ -1,0 +1,93 @@
+# Tailscale's release build under Bitbison capture. The action's pre hook
+# starts a whole-job capture before the steps below run; post seals it and
+# submits the build.
+#
+# Two jobs, the two halves of the public release tooling:
+#
+#   packages: `./tool/go run ./cmd/dist build all`, which cross-compiles
+#     tailscale + tailscaled per target and packages tgz, deb and rpm (nfpm
+#     in-process), Synology spk (3 DSM x 6 arches) and QNAP qpkg (built
+#     inside its own docker image). The web client is built from
+#     client/web with tool/yarn (node + yarn tarballs downloaded on demand)
+#     rather than taken from the prebuilt module.
+#
+#   images: build_docker.sh (mkctr) for every image target, multi-arch,
+#     pushed to ghcr.io under this repository's owner; then the Dockerfile
+#     build, pushed the same way. mkctr publishes with go-containerregistry,
+#     the Dockerfile path with docker: two different push paths to one
+#     registry, both authenticated by the job's GITHUB_TOKEN through
+#     `docker login` (mkctr reads the same docker credential store).
+#
+# Full-history checkout: mkversion stamps the version from git. No
+# gomodcache/go-build cache restore: the toolchain, modules, node and yarn
+# all arrive over the network, the cold baseline.
+name: bitbison
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  packages:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - name: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: bitbison-labs/github@master
+        with:
+          channel: ${{ secrets.BITBISON_CHANNEL }}
+          token: ${{ secrets.BITBISON_TOKEN }}
+          label: release/packages
+
+      - name: release packages
+        run: ./tool/go run ./cmd/dist build --verbose --web-client-root client/web --manifest dist/manifest.txt all
+
+      - name: built artifacts
+        run: |
+          cat dist/manifest.txt
+          ls -la dist
+
+  images:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - uses: bitbison-labs/github@master
+        with:
+          channel: ${{ secrets.BITBISON_CHANNEL }}
+          token: ${{ secrets.BITBISON_TOKEN }}
+          label: release/images
+
+      - name: login to ghcr.io
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+
+      - name: container images (mkctr)
+        run: |
+          for target in client k8s-operator k8s-nameserver tsidp k8s-proxy; do
+            case $target in
+              client) repo=ghcr.io/${{ github.repository_owner }}/tailscale ;;
+              *)      repo=ghcr.io/${{ github.repository_owner }}/$target ;;
+            esac
+            echo "::group::$target -> $repo"
+            TARGET=$target REPOS=$repo PUSH=true ./build_docker.sh
+            echo "::endgroup::"
+          done
+
+      - name: container image (Dockerfile)
+        run: |
+          ref=ghcr.io/${{ github.repository_owner }}/tailscale-dockerfile:${GITHUB_SHA::9}
+          docker build -t "$ref" .
+          docker push "$ref"
