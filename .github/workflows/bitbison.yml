@@ -1,22 +1,29 @@
-# Tailscale's release build under Bitbison capture. The action's pre hook
-# starts a whole-job capture before the steps below run; post seals it and
-# submits the build.
+# tailscaled's release packaging under Bitbison capture. The action's pre
+# hook starts a whole-job capture before the steps below run; post seals it
+# and submits the build.
 #
-# Two jobs, the two halves of the public release tooling:
+# Scoped to tailscaled for now, two jobs:
 #
-#   packages: `./tool/go run ./cmd/dist build all`, which cross-compiles
-#     tailscale + tailscaled per target and packages tgz, deb and rpm (nfpm
-#     in-process), Synology spk (3 DSM x 6 arches) and QNAP qpkg (built
-#     inside its own docker image). The web client is built from
-#     client/web with tool/yarn (node + yarn tarballs downloaded on demand)
-#     rather than taken from the prebuilt module.
+#   tailscaled: `./tool/go run ./cmd/dist build` for the linux/amd64 tgz,
+#     deb and rpm, which is how the public release tooling packages
+#     tailscale + tailscaled (nfpm in-process), with the web client built
+#     from client/web by tool/yarn rather than taken from the prebuilt
+#     module.
+#   images: the `client` image (tailscale, tailscaled, containerboot) with
+#     build_docker.sh (mkctr) for linux/amd64, then the Dockerfile image,
+#     both pushed to ghcr.io under this repository's owner. mkctr publishes
+#     with go-containerregistry, the Dockerfile path with docker: two push
+#     paths to one registry, both authenticated by the job's GITHUB_TOKEN
+#     through `docker login` (mkctr reads the same credential store).
 #
-#   images: build_docker.sh (mkctr) for every image target, multi-arch,
-#     pushed to ghcr.io under this repository's owner; then the Dockerfile
-#     build, pushed the same way. mkctr publishes with go-containerregistry,
-#     the Dockerfile path with docker: two different push paths to one
-#     registry, both authenticated by the job's GITHUB_TOKEN through
-#     `docker login` (mkctr reads the same docker credential store).
+# The other target families (other arches, Synology, QNAP) and the other
+# images (k8s-operator, k8s-nameserver, tsidp, k8s-proxy) are left out
+# until the integration is extended to them.
+#
+# The go caches, TMPDIR and ~/.cache (the toolchain, node and yarn the
+# tool/ wrappers download) live on the runner's second disk: a first attempt
+# that built everything filled the root filesystem and took the runner
+# worker down with it, before the post hook could seal the capture.
 #
 # Full-history checkout: mkversion stamps the version from git. No
 # gomodcache/go-build cache restore: the toolchain, modules, node and yarn
@@ -30,9 +37,9 @@ on:
   workflow_dispatch:
 
 jobs:
-  packages:
+  tailscaled:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
       - name: checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -43,19 +50,42 @@ jobs:
         with:
           channel: ${{ secrets.BITBISON_CHANNEL }}
           token: ${{ secrets.BITBISON_TOKEN }}
-          label: release/packages
+          label: tailscaled/linux-amd64
 
-      - name: release packages
-        run: ./tool/go run ./cmd/dist build --verbose --web-client-root client/web --manifest dist/manifest.txt all
+      - name: scratch on the second disk
+        run: |
+          set -e
+          base=/mnt/scratch
+          if ! (sudo mkdir -p "$base" && sudo chown "$(id -u):$(id -g)" "$base"); then
+            base="$RUNNER_TEMP/scratch"
+            mkdir -p "$base"
+          fi
+          mkdir -p "$base/gocache" "$base/gomodcache" "$base/tmp" "$base/cache"
+          {
+            echo "GOCACHE=$base/gocache"
+            echo "GOMODCACHE=$base/gomodcache"
+            echo "TMPDIR=$base/tmp"
+          } >> "$GITHUB_ENV"
+          if [ -d "$HOME/.cache" ] && [ ! -L "$HOME/.cache" ]; then
+            cp -a "$HOME/.cache/." "$base/cache/"
+            rm -rf "$HOME/.cache"
+          fi
+          ln -sfn "$base/cache" "$HOME/.cache"
+          df -h / "$base"
+
+      - name: tailscaled packages (linux/amd64)
+        run: ./tool/go run ./cmd/dist build --verbose --web-client-root client/web --manifest dist/manifest.txt 'linux/amd64/(tgz|deb|rpm)'
 
       - name: built artifacts
+        if: always()
         run: |
-          cat dist/manifest.txt
-          ls -la dist
+          cat dist/manifest.txt || true
+          ls -la dist || true
+          df -h / /mnt || true
 
   images:
     runs-on: ubuntu-24.04
-    timeout-minutes: 120
+    timeout-minutes: 60
     permissions:
       contents: read
       packages: write
@@ -69,25 +99,38 @@ jobs:
         with:
           channel: ${{ secrets.BITBISON_CHANNEL }}
           token: ${{ secrets.BITBISON_TOKEN }}
-          label: release/images
+          label: tailscaled/images
+
+      - name: scratch on the second disk
+        run: |
+          set -e
+          base=/mnt/scratch
+          if ! (sudo mkdir -p "$base" && sudo chown "$(id -u):$(id -g)" "$base"); then
+            base="$RUNNER_TEMP/scratch"
+            mkdir -p "$base"
+          fi
+          mkdir -p "$base/gocache" "$base/gomodcache" "$base/tmp" "$base/cache"
+          {
+            echo "GOCACHE=$base/gocache"
+            echo "GOMODCACHE=$base/gomodcache"
+            echo "TMPDIR=$base/tmp"
+          } >> "$GITHUB_ENV"
+          if [ -d "$HOME/.cache" ] && [ ! -L "$HOME/.cache" ]; then
+            cp -a "$HOME/.cache/." "$base/cache/"
+            rm -rf "$HOME/.cache"
+          fi
+          ln -sfn "$base/cache" "$HOME/.cache"
+          df -h / "$base"
 
       - name: login to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
-      - name: container images (mkctr)
-        run: |
-          for target in client k8s-operator k8s-nameserver tsidp k8s-proxy; do
-            case $target in
-              client) repo=ghcr.io/${{ github.repository_owner }}/tailscale ;;
-              *)      repo=ghcr.io/${{ github.repository_owner }}/$target ;;
-            esac
-            echo "::group::$target -> $repo"
-            TARGET=$target REPOS=$repo PUSH=true ./build_docker.sh
-            echo "::endgroup::"
-          done
+      - name: tailscale image (mkctr, linux/amd64)
+        run: TARGET=client PLATFORM=flyio REPOS=ghcr.io/${{ github.repository_owner }}/tailscale PUSH=true ./build_docker.sh
 
-      - name: container image (Dockerfile)
+      - name: tailscale image (Dockerfile)
         run: |
           ref=ghcr.io/${{ github.repository_owner }}/tailscale-dockerfile:${GITHUB_SHA::9}
           docker build -t "$ref" .
           docker push "$ref"
+          df -h / /mnt
