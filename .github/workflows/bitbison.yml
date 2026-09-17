@@ -50,6 +50,7 @@ jobs:
         with:
           channel: ${{ secrets.BITBISON_CHANNEL }}
           token: ${{ secrets.BITBISON_TOKEN }}
+          instance: ${{ secrets.BITBISON_INSTANCE }}
           label: tailscaled/linux-amd64
 
       - name: scratch on the second disk
@@ -105,6 +106,7 @@ jobs:
         with:
           channel: ${{ secrets.BITBISON_CHANNEL }}
           token: ${{ secrets.BITBISON_TOKEN }}
+          instance: ${{ secrets.BITBISON_INSTANCE }}
           label: tailscaled/images
 
       - name: scratch on the second disk
