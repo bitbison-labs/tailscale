@@ -15,6 +15,9 @@
 #     with go-containerregistry, the Dockerfile path with docker: two push
 #     paths to one registry, both authenticated by the job's GITHUB_TOKEN
 #     through `docker login` (mkctr reads the same credential store).
+#     Each push step declares what it pushed (`buildguard artifact
+#     --image`): mkctr's command line is too long for the capture to keep
+#     its tags, so the declaration is what names the image.
 #
 # The other target families (other arches, Synology, QNAP) and the other
 # images (k8s-operator, k8s-nameserver, tsidp, k8s-proxy) are left out
@@ -133,12 +136,19 @@ jobs:
       - name: login to ghcr.io
         run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
 
+      # build_docker.sh tags v<short> and v<minor>, from the same version
+      # variables it reads.
       - name: tailscale image (mkctr, linux/amd64)
-        run: TARGET=client PLATFORM=flyio REPOS=ghcr.io/${{ github.repository_owner }}/tailscale PUSH=true ./build_docker.sh
+        run: |
+          repo=ghcr.io/${{ github.repository_owner }}/tailscale
+          TARGET=client PLATFORM=flyio REPOS="$repo" PUSH=true ./build_docker.sh
+          eval "$(./build_dist.sh shellvars)"
+          command -v buildguard >/dev/null && buildguard artifact --image "$repo:v${VERSION_SHORT}" --image "$repo:v${VERSION_MINOR}" || true
 
       - name: tailscale image (Dockerfile)
         run: |
           ref=ghcr.io/${{ github.repository_owner }}/tailscale-dockerfile:${GITHUB_SHA::9}
           docker build -t "$ref" .
           docker push "$ref"
+          command -v buildguard >/dev/null && buildguard artifact --image "$ref" || true
           df -h / /mnt
