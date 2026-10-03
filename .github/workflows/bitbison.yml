@@ -19,6 +19,10 @@
 #     --image`): mkctr's command line is too long for the capture to keep
 #     its tags, so the declaration is what names the image.
 #
+# Both jobs declare their products: once any job of a run declares one,
+# the run lists only declared artifacts, so the packages are declared
+# beside the images.
+#
 # The other target families (other arches, Synology, QNAP) and the other
 # images (k8s-operator, k8s-nameserver, tsidp, k8s-proxy) are left out
 # until the integration is extended to them.
@@ -85,6 +89,9 @@ jobs:
         run: ./tool/go run ./cmd/dist build --verbose --web-client-root client/web --manifest dist/manifest.txt 'linux/amd64/(tgz|deb|rpm)'
         env:
           NOBASHDEBUG: "true"
+
+      - name: declare the packages
+        run: command -v buildguard >/dev/null && buildguard artifact dist/*.tgz dist/*.deb dist/*.rpm || true
 
       - name: built artifacts
         if: always()
