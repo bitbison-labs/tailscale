@@ -53,7 +53,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: bitbison-labs/github@master
+      - uses: bitbison-labs/github@e4ef48414f0cf13bd38187afe37669f3853b4ff9 # master
         with:
           channel: ${{ secrets.BITBISON_CHANNEL }}
           token: ${{ secrets.BITBISON_TOKEN }}
@@ -112,7 +112,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: bitbison-labs/github@master
+      - uses: bitbison-labs/github@e4ef48414f0cf13bd38187afe37669f3853b4ff9 # master
         with:
           channel: ${{ secrets.BITBISON_CHANNEL }}
           token: ${{ secrets.BITBISON_TOKEN }}
@@ -141,7 +141,10 @@ jobs:
           df -h / "$base"
 
       - name: login to ghcr.io
-        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GHCR_USER: ${{ github.actor }}
+        run: echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
 
       # build_docker.sh tags v<short> and v<minor>, from the same version
       # variables it reads.
