@@ -1,5 +1,7 @@
 # Tailscale
 
+[![bitbison](https://build.bitbison.io/bitbison/public/badge/laurzybau7kecilrbnks/badge.svg)](https://build.bitbison.io/bitbison/public/latest/laurzybau7kecilrbnks)
+
 https://tailscale.com
 
 Private WireGuard® networks made easy
